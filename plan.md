@@ -17,6 +17,21 @@
 
 ---
 
+## Принятые решения (зафиксировано)
+
+1. **Единый стек — Rust.** Движок качества ENGINE («нейроцех») **портируется на Rust** и живёт в одной
+   кодовой базе с control-plane. TS-исходники `/opt/cply-agent` — **референс-спека** (FSM, фазы, роли,
+   гейты, валидаторы, их тесты как golden-кейсы), а не рантайм. Один язык в проде, общие типы между
+   control-plane и движком, единый CI/деплой. Цена — большой порт; TS-тесты переносятся как
+   AT-якоря/спека для Rust-тестов.
+2. **Без монетизации — только cost/time-аналитика.** Из «нейроцеха» берём **учёт реальной стоимости и
+   времени** каждого ответа LLM, агрегаты по диалогу/проекту/связке agent+model. **НЕ** переносим:
+   пакеты ⚡, СБП/ЮKassa, маржу, авто-рефилл, шаринг энергии, LLM-gateway-биллинг. Volter — личный
+   инструмент, не SaaS на продажу. Модель `CostEntry`/`costRollup` (event-sourcing) переиспользуем,
+   денежный контур (CHARGE/SPEND-ledger, treasury) — выкидываем.
+
+---
+
 ## Часть I. Стратегия и целевая архитектура
 
 ### 1. Ключевое архитектурное решение: консолидация двух прототипов
@@ -27,14 +42,18 @@
 (e2e/контракты, «тесты реальные не mock», shift-left, классификация задач, план через research).
 
 Нынешний движок VOLT (упрощённый `clarify/plan/execute/review` в `infrastructure/codex.rs`)
-заменяется/обогащается полноценным конвейером ENGINE.
+заменяется полноценным конвейером ENGINE, **портированным на Rust**.
 
-**Способ интеграции (выбран):** ENGINE запускается как **контейнеризованный execution-runner на
-воркер-ноде**, VOLT оркестрирует его через **runtime-plane в HTTP-режиме** (сейчас это заглушка
-в `backend/src/domain/runtime_plane.rs` — её реализация и есть мост к распределённости). Это:
-- переиспользует 257 готовых тестов и проверенную FSM ENGINE (не переписываем на Rust сразу);
+**Способ интеграции (выбран — см. «Принятые решения» №1):** модель ENGINE (15 фаз, 18 ролей,
+21 валидатор, микроцикл plan→synth→gate, event-sourcing) **портируется в Rust-крейт** `volter-engine`
+в общей кодовой базе с control-plane. На воркер-ноде крутится **Rust execution-runner** (этот крейт +
+CLI-агенты claude-code/codex/aider), VOLT оркестрирует его через **runtime-plane в HTTP/gRPC-режиме**
+(сейчас это заглушка в `backend/src/domain/runtime_plane.rs` — её реализация и есть мост к
+распределённости). Это:
+- даёт единый стек и общие типы control-plane ↔ движок (проще CI/деплой/рефакторинг);
 - естественно ложится на требование «воркеры на других серверах, управление с RU-ноды»;
-- оставляет открытым поздний порт движка в Rust (см. §17, открытый вопрос).
+- TS-движок `/opt/cply-agent` и его 257 тестов используются как **исполняемая спека** порта
+  (golden-кейсы переводятся в Rust-тесты фаза за фазой).
 
 ```
 ┌──────────────────────────── CONTROL PLANE (RU-VPS) — ставится вручную ──────────────────────┐
@@ -46,7 +65,7 @@
         ▼                          ▼                         ▼                          ▼
  ┌────────────────┐       ┌────────────────┐        ┌────────────────┐        ┌────────────────┐
  │ WORKER (EU)    │       │ WORKER (EU)    │        │ STAND test     │        │ STAND prod     │
- │ ENGINE(TS) +   │       │ ENGINE(TS) +   │        │ деплой проекта │        │ деплой проекта │
+ │ engine(Rust) + │       │ engine(Rust) + │        │ деплой проекта │        │ деплой проекта │
  │ claude-code CLI│       │ codex / aider  │        │ + e2e-прогон   │        │ (app+db compose)│
  │ git workspace  │       │ git workspace  │        │                │        │                │
  └────────────────┘       └────────────────┘        └────────────────┘        └────────────────┘
@@ -77,7 +96,8 @@
 1. **Распределённость** — runtime-plane HTTP-режим = заглушка; нет реальных воркеров на других VPS.
 2. **Provisioning нод «по кнопке»** из UI control-plane (есть только systemd-шаблоны в ENGINE).
 3. **Враппер авторизации агентов из web** (claude login / codex auth / aider api-key) — нет UI-флоу.
-4. **Единый движок качества** — VOLT использует упрощённые фазы; полноценный ENGINE не подключён.
+4. **Единый движок качества** — VOLT использует упрощённые фазы; полноценный ENGINE надо
+   **портировать в Rust** и подключить (TS-движок существует, но в проде его не будет).
 5. **UI**: нет голоса, нет Tailwind (кастомный CSS), polling вместо SSE/WS, нет «мыслей»-стрима,
    нет deep-research-прогресса, нет просмотра дерева файлов проекта.
 6. **Research-флоу** «идея→исследование→сохранить в git→план» как первоклассный сценарий.
@@ -88,7 +108,8 @@
 ### 4. Стек (фиксируем)
 
 - CP backend/оркестратор: **Rust** (axum, tokio, sqlx, Postgres) — из VOLT.
-- Execution-движок: **TypeScript** (ENGINE) в контейнере воркера; CLI-агенты claude-code/codex/aider.
+- Execution-движок: **Rust-крейт `volter-engine`** (порт ENGINE) в контейнере воркера;
+  CLI-агенты claude-code/codex/aider. TS-`/opt/cply-agent` — референс-спека порта.
 - Frontend: **React + TypeScript + Vite + Tailwind CSS** (миграция с кастомного CSS — см. Ш9).
 - Транспорт CP↔ноды: **gRPC/HTTP over mTLS** в Docker overlay; UI↔CP: **WebSocket/SSE** для стримов.
 - Хранилища: Postgres (метаданные), object/files (md-память, артефакты), secrets-store.
@@ -105,12 +126,15 @@
 
 #### Шаг 0 — Свести прототипы в монорепо `volter`
 - Перенести VOLT в `volter/control-plane/` (backend+frontend+ops+nginx+compose).
-- Перенести ENGINE в `volter/engine/` (TS-движок).
-- Общий `docs/` (включая перенос `RESULT_VISION.md`, `neurotcekh.*`, `three-layers.design.md`,
-  `energy.*` как референс-архитектуру).
+- Завести пустой Rust-крейт `volter/engine/` (`volter-engine`) — целевой дом порта движка.
+- Положить TS-`/opt/cply-agent` в `volter/reference/cply-agent/` как **исполняемую спеку** порта
+  (его тесты — golden-кейсы; в прод не собирается).
+- Общий `docs/` (перенос `RESULT_VISION.md`, `neurotcekh.*`, `three-layers.design.md` как референс;
+  `energy.*` — только раздел cost/time, денежный контур помечаем «не реализуем»).
 - Корневой `Makefile`/`justfile`: `build`, `test`, `smoke`, `up`, `deploy-{test,prod}`.
-- Прогнать существующие тесты обоих прототипов, зафиксировать зелёный baseline.
-- **DoD:** оба прототипа собираются и проходят свои тесты внутри `volter/`; CI гоняет оба.
+- Прогнать существующие тесты VOLT, зафиксировать зелёный baseline.
+- **DoD:** VOLT собирается и проходит тесты внутри `volter/`; крейт `volter-engine` компилируется
+  (скелет); TS-референс доступен, его тесты можно запускать локально для сверки порта.
 
 #### Шаг 1 — Единая доменная модель и миграции
 - Свести модель: к VOLT-таблицам добавить понятия ENGINE: `phases`, `roles`, `gates/validators`,
@@ -155,12 +179,18 @@
 - **DoD:** с нуля авторизовать claude и codex на воркере целиком из web; ключ aider сохраняется и
   используется раннером.
 
-#### Шаг 6 — Подключить ENGINE как execution-движок VOLT
-- Заменить упрощённый `execute`-flow VOLT на конвейер ENGINE (15 фаз) на воркере.
-- Маппинг: VOLT `start-work` → ENGINE `task poll/run`; VOLT `runs.events` ← ENGINE `events.jsonl`;
-  VOLT `plans` ← ENGINE `main.md`/manifests.
-- Фазовый роутинг моделей (clarify/plan/execute/review → tier→model) свести с `§34` chain/fallback.
-- **DoD:** диалог «сделай фичу» проходит intake→…→development→tests-green на воркере; в UI видны фазы.
+#### Шаг 6 — Портировать ENGINE в Rust (`volter-engine`) и подключить как execution-движок
+- **Порт нейроцеха в Rust** по TS-референсу, модуль за модулем, от листьев к корню:
+  доменные типы → FSM `TRANSITIONS` → event-sourcing (`events` лог) → роли → гейты/валидаторы →
+  runners (claude-code/codex/aider/shell/docker-shell) → микроцикл `runPhase` (plan→synth→gate) →
+  `runTask`/poller. Каждый TS-тест переносится в Rust-тест как golden-кейс (ту же FSM/гейты).
+- Заменить упрощённый `execute`-flow VOLT (`infrastructure/codex.rs`) на `volter-engine` на воркере.
+- Маппинг: VOLT `start-work` → engine task-run; VOLT `runs` event-log ← engine event-sourcing;
+  VOLT `plans` ← engine `main.md`/manifests.
+- Фазовый роутинг моделей (clarify/plan/execute/review → tier→model) + chain/fallback `§34`
+  (claude→codex→deepseek по остатку лимита) — **без** биллинг-обвязки.
+- **DoD:** диалог «сделай фичу» проходит intake→…→development→tests-green на воркере через Rust-движок;
+  golden-тесты, перенесённые из TS, зелёные; в UI видны фазы.
 
 #### Шаг 7 — TDD-гейты и «тесты реальные, не mock»
 - Включить валидаторы ENGINE как обязательный Definition of Done шага:
@@ -235,11 +265,15 @@
   создаёт скил** по запросу (генерация + регистрация + тест скила) — поверх детерминированной модели ENGINE.
 - **DoD:** по запросу «нужен инструмент X» агент создаёт скил, он регистрируется и используется в фазе.
 
-#### Шаг 17 — Экономика и точная стоимость
-- Подключить energy/CAP-модель ENGINE: `SPEND/CHARGE` ledger, стоимость на **каждый ответ LLM** и
-  время его работы, агрегаты по диалогу/проекту; LLM-gateway `/llm/v1` + fallback-chain `§34`.
+#### Шаг 17 — Точная стоимость и время (без монетизации)
+- Перенести из ENGINE **только cost/time-учёт**: модель `CostEntry`/`costRollup` (event-sourcing,
+  чистая проекция лога) — стоимость на **каждый ответ LLM** и время его работы, агрегаты по
+  диалогу/проекту/связке agent+model. Денежный контур (energy/CAP, CHARGE-ledger, treasury, СБП/ЮKassa,
+  пакеты, маржа, авто-рефилл, шаринг) **не реализуем** (см. «Принятые решения» №2).
+- Цены моделей берём из конфигурации (прайс per-1M токенов) для расчёта $ — без gateway-биллинга.
 - Показать реальную стоимость и время диалога и каждого ответа (в UI частично есть — довести до «каждый ответ»).
-- **DoD:** для каждого ответа агента видны cost и time; ledger сходится (CHARGE−SPEND) в тестах.
+- **DoD:** для каждого ответа агента видны cost и time; `costRollup` как проекция лога сходится в тестах;
+  никаких платёжных сущностей в схеме.
 
 ### Этап F. Деплой, стенды, релиз системы
 
@@ -268,15 +302,12 @@
 - Зафиксировано в git: коммиты по шагам, тег, запись в индекс памяти (`vector of changes`).
 
 ### 17. Открытые вопросы (решить по ходу)
-1. **Порт ENGINE в Rust** — оставляем TS-движок на воркере (рекоменд.) или со временем переписываем
-   на Rust ради единого стека? Влияет на Ш6 и далее.
-2. **«Нейроцех»** — energy/CAP-экономика и биллинг (СБП/ЮKassa) нужны в volter или это была отдельная
-   коммерческая обвязка? Если не нужна монетизация — берём только cost/time-аналитику (Ш17 урезается).
-3. **STT-провайдер** (Ш13): локальный (whisper) vs внешний API.
-4. **Secrets-store**: Vault / sops / age / встроенное.
-5. **Регионы/провайдеры VPS** (RU и EU), сетевые ограничения для overlay/mTLS.
-6. **Редактирование файлов** в UI — только просмотр (README п.41) или всё же правка.
-7. **Модель cross-host транспорта** — gRPC vs HTTP для runtime-plane (Ш2).
+> Решено: стек движка — **порт в Rust**; экономика — **только cost/time** (см. «Принятые решения»).
+1. **STT-провайдер** (Ш13): локальный (whisper) vs внешний API.
+2. **Secrets-store**: Vault / sops / age / встроенное.
+3. **Регионы/провайдеры VPS** (RU и EU), сетевые ограничения для overlay/mTLS.
+4. **Редактирование файлов** в UI — только просмотр (README п.41) или всё же правка.
+5. **Модель cross-host транспорта** — gRPC vs HTTP для runtime-plane (Ш2).
 
 ### 18. Карта «требование README → шаг»
 - git-проекты, контекст=клон, лёгкое добавление → Ш1, Ш11
@@ -310,8 +341,10 @@
 - `volt/frontend` (React/Vite) → UI (мигрируется на Tailwind, +голос/стримы/дерево файлов).
 - `volt/domain/runtime_plane.rs` → мост к воркерам (HTTP/gRPC-режим — Ш2).
 - `volt/ops`, `compose.*`, `nginx` → деплой и роутинг (база для Ш4, Ш18).
-- `cply-agent/src/{phases,roles,validators}` → движок качества/TDD (Ш6, Ш7, Ш8).
-- `cply-agent/src/author` → планирование/исследование (Ш8, Ш14).
-- `cply-agent/src/adapters/local/GitDataRepo` → git meta-sync по шагам (Ш11).
+- `cply-agent/src/{phases,roles,validators}` → **референс-спека** порта движка качества/TDD в Rust (Ш6, Ш7, Ш8).
+- `cply-agent/src/author` → референс планирования/исследования (Ш8, Ш14).
+- `cply-agent/src/adapters/local/GitDataRepo` → референс git meta-sync по шагам (Ш11).
 - `cply-agent/ops` + `three-layers.design.md` → provisioning нод (Ш4).
-- `cply-agent` energy/LLM-gateway → экономика и стоимость (Ш17).
+- `cply-agent` cost/time-модель (`CostEntry`/`costRollup`) → стоимость и время (Ш17);
+  energy/CAP/биллинг — **не переносим**.
+- `cply-agent/tests/*` → golden-кейсы для Rust-тестов порта (Ш6).
