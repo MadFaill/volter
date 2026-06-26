@@ -137,6 +137,141 @@
 
 ---
 
+## 6. Контрактная YAML-модель: правила, критерии и нарезка шагов (ядро системы)
+
+> Это центральное архитектурное решение. Оба прототипа независимо пришли к идее: **«что делать» и
+> «как это проверить» выражаются декларативно**, а исполнение — это прогон против машинно-проверяемых
+> критериев. Берём лучшее из обоих и делаем единую модель из **трёх слоёв YAML**.
+
+### 6.1. Идея в одной фразе
+**Манифест и роли — это стоячие правила и критерии проекта (канон, «что такое хорошо»). План —
+нарезка ИМЕННО этой задачи на шаги с контрактом `do`/`verify`/`check`. Исполнение — прогон шагов
+против безмодельных проверок и гейтов ролей; провал возвращает feedback в следующую попытку.**
+
+```
+СЛОЙ 1: КАНОН ПРОЕКТА (стоячие правила/критерии, YAML в .agent/)   ← редко меняется, неприкосновенен
+   manifest units (правила: арх/безопасность/ux/вординг/регуляторика) + roles (правила+критерии)
+        │  задают рамку и критерии качества; роль владеет своими гейтами
+        ▼
+СЛОЙ 2: ПЛАН ЗАДАЧИ (нарезка под конкретную задачу, генерится на диалог)   ← VOLT-подход
+   stages[].steps[] = { do, verify, check{cmd,expect}, satisfies:[unit.id] }
+        │  детерминированные правила нарезки (kind, обяз. tests/root_cause, синтез валидатора)
+        ▼
+СЛОЙ 3: ИСПОЛНЕНИЕ + ГЕЙТ-ПЕТЛЯ (event-sourcing)
+   шаг → безмодельный check + гейты ролей → GateDecision{status,signal,feedback}
+        провал → feedback инжектится в промпт следующей попытки (бюджет ретраев, human-in-the-loop)
+        успех → коммит шага, handoff следующему
+```
+
+### 6.2. Слой 1 — Канон: правила и критерии как YAML (из «нейроцеха», но декларативно)
+
+**Manifest unit = адресуемое правило/критерий.** Живёт в `.agent/manifest/<section>.yaml`
+(секции: architecture / security / ux / wording / data / regulatory / product …). Канон
+неприкосновенен для исполняющих ролей (separation of powers).
+
+```yaml
+# .agent/manifest/architecture.yaml
+units:
+  - id: ARCH.LAYER.ddd                 # стабильный адрес (не меняется по цепочке)
+    section: architecture
+    severity: hard                     # hard|soft — блокирует или предупреждает
+    tags: [layering, ddd]              # fine-отбор релевантного среза в промпт
+    text: "Бэкенд по DDD: domain/application/infrastructure/interfaces; зависимости только внутрь."
+    codeAnchors: ["backend/src/domain", "backend/src/interfaces"]   # мост к реальному коду
+    anchorsTo: [PRODUCT.QUALITY.maintainable]                       # трассировка к корню PRODUCT.*
+```
+
+**Роль = правила (`guard`) + критерии (`gate`) в YAML** — это улучшение над прототипом, где роль была
+TS-кодом с `buildPrompt`. Делаем роли **декларативными**: тело промпта — шаблон, в который движок
+инжектит контекст и feedback; код движку не нужен.
+
+```yaml
+# .agent/roles/architect.yaml
+id: architect
+purpose: "Привязать каждое требование к реальным символам кода."
+manifestSections: [architecture, core]   # какой срез канона видит роль (coarse)
+codeAccess: anchored                      # search | anchored — как получает код
+guard:
+  does: "Привязывает каждое требование к реальным символам/модулям."
+  mustNot: "Менять anchor, состав или продуктовый смысл требований."
+gate: [symbol-contract, product-anchored] # КРИТЕРИИ, которые обязана пройти роль
+promptTemplate: roles/architect.md        # шаблон; движок добавит guard/код/манифест/feedback
+```
+
+### 6.3. Слой 2 — План: нарезка шагов под задачу (из VOLT, ведущий подход)
+
+Планировщик режет **именно текущую задачу** на стадии и шаги. Каждый шаг несёт контракт
+**`do` (что сделать) + `verify` (критерий словами) + `check` (машинная проверка)** и `satisfies`
+(каким правилам канона удовлетворяет).
+
+```yaml
+# .agent/dialogs/<id>/plan-1.yml — нарезка ПОД ЭТУ задачу
+class: feature                 # из triage; задаёт скелет стадий и набор обяз. шагов
+stages:
+  - id: S1
+    kind: tests                # для feature/impl tests-стадия ОБЯЗАТЕЛЬНА (детерм. правило)
+    files: [backend/src/domain/teaser_test.rs]
+    steps:
+      - do: "написать red-тест teaser_returns_by_uuid"
+        verify: "тест компилируется и падает (red) до реализации"
+        check: { cmd: "cd backend && cargo test teaser_returns_by_uuid", expect_contains: "test result" }
+        satisfies: [PRODUCT.SCENARIO.public_teaser]
+    done: "Контракт теста существует и красный до реализации."
+  - id: S2
+    kind: implementation
+    files: [backend/src/domain/teaser.rs]
+    steps:
+      - do: "реализовать Teaser::by_uuid"
+        verify: "тест teaser_returns_by_uuid зелёный"
+        check: { cmd: "cd backend && cargo test teaser_returns_by_uuid", expect_contains: "ok",
+                 requires_validator: false }
+        satisfies: [PRODUCT.SCENARIO.public_teaser]
+    done: "Сценарий проходит реальным тестом."
+```
+
+**Детерминированные правила нарезки (проверяются БЕЗ LLM; невалидный план отклоняется):**
+- `kind ∈ {implementation, refactor, scaffold, tests, validation, root_cause, e2e, docs, deploy}`.
+- Каждый шаг обязан иметь непустые `do`, `verify` и `check` (либо `cmd`, либо `requires_validator+validator_file`).
+- Есть `implementation/refactor/scaffold` → **обязательна** `tests`-стадия.
+- Класс `bug` → первая стадия `root_cause`.
+- `implementation`-стадии обязаны называть физические `files`.
+- `requires_validator: true` → движок **сам вставляет отдельную `tests`-стадию**, которая физически
+  пишет валидатор, прежде чем исходная проверка может стать зелёной (из VOLT — закрывает «нечем проверить»).
+- Эвристика объёма: класс `meta/контент` с одним файлом → короткий **rewrite-flow** (1–2 шага);
+  код → полный TDD-flow (tests → impl → e2e).
+
+### 6.4. Слой 3 — Исполнение и гейт-петля (event-sourcing)
+
+- План **замораживается** при «В работу» (`frozen`), исполняется по шагам строго по очереди.
+- Каждый шаг: выполнила роль → **безмодельный `check`** (passed / failed / `missing_validator`
+  при «0 тестов» / skipped при отсутствии инструмента; таймаут) **+ гейты ролей** (det/verdict).
+- Результат — `GateDecision { status, signal, feedback[] }`; `feedback` = `{code, where, problem, fix}`.
+- Провал → по `signal` маршрутизатор решает: self-loop (та же фаза) или возврат к нужной роли;
+  **feedback инжектится в промпт следующей попытки** («исправь, иначе тот же возврат»); бюджет
+  ретраев на канал; при исчерпании или критичном сигнале — **human-in-the-loop**.
+- Успех шага → коммит в ветку диалога, `handoff` (контекст) следующему шагу.
+- Всё пишется в `events`-лог рана; стоимость/время/прогресс/resume/stuck — **чистые проекции лога**.
+
+### 6.5. Связки между слоями
+- `step.satisfies[] → manifest.unit.id` — шаг доказывает конкретное правило канона; гейт
+  `contract-coverage` проверяет, что **каждое затронутое правило закрыто** хотя бы одним зелёным шагом.
+- `manifest.unit.anchorsTo → PRODUCT.*` — трассировка к продуктовому корню (BFS); гейт отклоняет
+  «осиротевшие» требования вне продуктовой рамки.
+- `task_class → {скелет стадий, набор manifestSections, набор ролей}` — класс задачи выбирает, какие
+  правила и роли применяются и как режется план.
+- Роль владеет своими `gate`; терминальные гейты фазы — на уровне фазы.
+
+### 6.6. Почему так (а не иначе)
+- **Безмодельные `check` + декларативные критерии** не дают LLM «самозачесть» работу — закрывает
+  требование README «тесты реальные, не mock» структурно, а не на доверии.
+- **Нарезка под задачу (VOLT)** даёт гибкость «середины» SDLC: план = базовый каркас + шаги под
+  конкретную задачу, как требует README, без жёсткого зашитого пайплайна.
+- **Правила/критерии в YAML (нейроцех)** делают качество (архитектура/ui/вординг/регуляторика)
+  явным, версионируемым и переиспользуемым между задачами; роль как YAML — проще расширять, чем код.
+- **Feedback-петля** превращает провал гейта в прицельную доработку, а не в слепой ретрай.
+
+---
+
 ## Часть II. Последовательные шаги реализации
 
 > Шаги — порядок получения работающей системы. Каждый шаг закрывается реальными тестами, автодокой,
@@ -153,12 +288,16 @@
 - **DoD:** `volter` собирается, поднимается локально (пустой каркас), CI зелёный. Код прототипов не
   импортирован — только конспект их подходов лежит в `docs/prototype-lessons.md`.
 
-#### Шаг 1 — Доменная модель и миграции
-- Спроектировать схему под README + подходы §2: `projects`, `dialogs`, `messages`, `plans`, `runs`,
-  `events` (event-sourcing рана), `jobs`, `nodes`, `bindings` (agent+model+mode), `deployments`,
-  `phases/roles/gates`, `task_class`, `manifest_units`, `cost_entries`.
-- Зафиксировать инварианты: `dialog`→git-ветка, `run`→event-log, `plan`→`main.md`/манифесты.
-- **DoD:** миграции применяются, HTTP-тесты роутинга зелёные, схема описана в `docs/data-model.md`.
+#### Шаг 1 — Доменная модель, контрактные YAML-схемы и миграции
+- Спроектировать схему под README + §2 + контрактную модель §6: `projects`, `dialogs`, `messages`,
+  `plans` (stages/steps c `do`/`verify`/`check`/`satisfies`), `runs`, `events` (event-sourcing рана),
+  `jobs`, `nodes`, `bindings` (agent+model+mode), `deployments`, `task_class`, `cost_entries`.
+- Канон проекта в `.agent/`: схемы и валидаторы YAML для **manifest units** (§6.2), **roles** (§6.2),
+  **plan** (§6.3); строгая (zod-подобная) валидация на Rust.
+- Зафиксировать инварианты: `dialog`→git-ветка, `run`→event-log, `plan`(frozen)→исполняемые шаги,
+  `step.satisfies`→`manifest.unit.id`, `unit.anchorsTo`→`PRODUCT.*`.
+- **DoD:** миграции применяются; парсер+валидатор контрактных YAML покрыт тестами (валидный/битый план,
+  трассировка к PRODUCT.*); схемы описаны в `docs/data-model.md` и `docs/contracts.md`.
 
 #### Шаг 2 — Абстракция исполнения (runtime-plane) и единый интерфейс агента
 - Спроектировать трейт исполнения: `prepare_workspace` / `run_stage` / `collect_artifacts` /
@@ -198,29 +337,38 @@
 - Токены/ключи → secrets-store, привязка к ноде/проекту; монтирование `~/.claude`/`~/.codex` в контейнер.
 - **DoD:** claude и codex авторизуются на воркере целиком из web; ключ aider сохраняется и используется.
 
-#### Шаг 7 — Движок качества `volter-engine` (фазы/роли/микроцикл) на Rust
-- Реализовать **на Rust** модель SDLC по образцу «нейроцеха», настроенную под README:
-  доменные типы → FSM переходов → event-sourcing → роли с границами → микроцикл plan→synth→gate →
-  runners → task-loop/poller.
+#### Шаг 7 — Движок качества `volter-engine` (исполнение контрактной модели §6) на Rust
+- Реализовать **на Rust** Слой 3 (§6.4): загрузка канона (manifest+roles YAML) → исполнение замороженного
+  плана по шагам → безмодельный `check` + гейты ролей → `GateDecision{status,signal,feedback}` →
+  маршрутизатор (self-loop / возврат к роли, бюджет на канал) → **инъекция feedback** в промпт следующей
+  попытки → human-in-the-loop при исчерпании/критичном сигнале. Всё через event-sourcing-лог.
+- Роли **декларативные** (YAML §6.2): движок собирает промпт = guard + срез манифеста по `manifestSections`/tags
+  + код по `codeAnchors` + feedback; шаблон роли подставляется, кода роли нет.
 - Связки `agent+model+mode` (chat/planning/execution) и фазовый роутинг моделей по tier с
   fallback-chain (claude→codex→deepseek по остатку лимита) — **без** биллинга.
-- **DoD:** диалог «сделай фичу» проходит intake→…→development на воркере через Rust-движок; фазы видны в UI.
+- **DoD:** диалог «сделай фичу» проходит шаги плана на воркере; провал гейта возвращает feedback и
+  чинится на следующей попытке; прогресс/фазы видны в UI.
 
 #### Шаг 8 — TDD-гейты и «тесты реальные, не mock»
-- Реализовать обязательный Definition of Done шага: `test-modeled` → `tests-written` →
-  `tests-green` (baseline-diff от merge-base) + **`test-honesty`** + `contract-coverage`.
+- Реализовать набор гейтов поверх §6.4: `test-modeled` → `tests-written` (red) →
+  `tests-green` (baseline-diff от merge-base) + **`test-honesty`** (тест проверяет `do/verify`,
+  а не заглушку) + **`contract-coverage`** (каждое затронутое `manifest.unit` закрыто зелёным шагом).
+- Безмодельный `check` Слоя 2 (§6.3): статусы passed/failed/`missing_validator`/skipped + таймаут;
+  авто-синтез validator-стадии при `requires_validator` (нечем проверить — сначала пишем проверку).
 - Раздельные дорожки backend/frontend, контрактные тесты, e2e на стенде.
-- Второй контур — безмодельный артефакт-гейт (`check.cmd`) поверх модельных гейтов.
 - **DoD:** шаг не закрывается без написанного, зелёного и честного сьюта; есть тест, что mock-сьют
-  отбраковывается `test-honesty`.
+  отбраковывается `test-honesty`, а незакрытое правило канона — `contract-coverage`.
 
-#### Шаг 9 — Классификация задач и планирование (author)
-- `triage` + `estimate-size` → класс задачи (bug/feature/контент/инфра/research, S/M/L).
-- План = базовый SDLC + задаче-специфичные шаги; роутинг ролей/скилов по затронутым компонентам
-  (архитектура/UI/вординг/контракты/регуляторика) через манифест-секции и author-перспективы.
-- Простой случай (один мета-файл) → короткий rewrite-flow; код → полный flow (скорость↔архитектура).
-- **DoD:** для разных классов из одного ввода генерируются разные планы; план редактируемо-читаемый
-  до «В работу»; human-in-the-loop ретраи на гейтах.
+#### Шаг 9 — Классификация задач и нарезка плана под задачу (Слой 2, §6.3)
+- `triage` + `estimate-size` → `task_class` (bug/feature/контент/инфра/research, S/M/L).
+- Планировщик режет **именно эту задачу** на `stages[].steps[]` с контрактом `do`/`verify`/`check`/
+  `satisfies`; `task_class` задаёт скелет стадий, набор `manifestSections` и ролей (роутинг по
+  затронутым компонентам: архитектура/UI/вординг/контракты/регуляторика).
+- Детерминированная валидация плана (§6.3): обяз. tests при impl, `root_cause` для bug, физические
+  `files`, синтез validator-стадии. Простой случай (один мета-файл) → rewrite-flow; код → полный TDD-flow.
+- План формируется через author (research→product→perspectives) и привязывается к manifest-правилам.
+- **DoD:** для разных классов из одного ввода генерируются разные валидные планы; невалидный план
+  отклоняется детерминированно; план редактируемо-читаемый до «В работу»; human-in-the-loop на гейтах.
 
 ### Этап D. UI/UX
 
@@ -345,9 +493,12 @@
 ### 19. Карта «опыт прототипа → где применяем» (референс, код не переносим)
 - `/opt/volt` dialog-first SDLC, freeze-плана, «В работу» → поведение Ш9, Ш11.
 - `/opt/volt` git internal/external + ssh на проект → дизайн git-слоя Ш1, Ш12.
-- `/opt/volt` артефакт-гейт `check.cmd` → второй контур валидации Ш8.
+- `/opt/volt` нарезка плана под задачу (`stages/steps` `do`/`verify`/`check`, `kind`, синтез
+  validator-стадии) → контрактная модель Слой 2 §6.3, Ш9; безмодельный `check` → Ш8.
 - `/opt/volt` runtime-plane (local) → абстракция исполнения Ш2, удалённый режим Ш3.
 - `/opt/volt` test/prod-контуры, backup, rollback, nginx-роутинг, пройденные грабли → Ш19.
+- `/opt/cply-agent` манифесты/роли/`do`/`verify`/`anchor`/`trail` как правила и критерии в YAML +
+  feedback-injection → контрактная модель Слой 1/3 §6.2/§6.4, Ш1/Ш7.
 - `/opt/cply-agent` 15 фаз SDLC + plan→synth→gate + роли с границами → движок Ш7.
 - `/opt/cply-agent` TDD-гейты `tests-green`/`test-honesty`/`contract-coverage` → Ш8.
 - `/opt/cply-agent` event-sourcing + проекции → раны/состояние/resume Ш7, стоимость Ш18.
