@@ -1,0 +1,29 @@
+[package]
+name = "volter-control-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "volter-api"
+path = "src/main.rs"
+
+[dependencies]
+volter-shared-types = { path = "../shared-types" }
+volter-engine = { path = "../engine" }
+volter-runtime-plane = { path = "../runtime-plane" }
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+argon2.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+base64.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tower.workspace = true

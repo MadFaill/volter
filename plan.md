@@ -674,19 +674,22 @@ LLM **не грузит всё**. Цикл:
 
 ### Этап A. Каркас новой системы
 
-#### Шаг 0 — Bootstrap репозитория `volter` (с нуля)
-- Rust-воркспейс: крейты `control-plane` (API+оркестратор), `engine` (движок качества), `runtime-plane`
-  (абстракция исполнения), `shared-types`.
-- Frontend-каркас: React + Vite + Tailwind.
-- Docker: `docker-compose.yml` (dev), заготовки `*.test.yml`/`*.prod.yml`; `Makefile`/`justfile`.
-- CI с TDD-гейтом (fmt, clippy, тесты backend; typecheck/build/тесты frontend).
-- **DoD:** `volter` собирается, поднимается локально (пустой каркас), CI зелёный. Код прототипов не
-  импортирован — только конспект их подходов лежит в `docs/prototype-lessons.md`.
+#### Шаг 0 — Bootstrap репозитория `volter` (с нуля) — ✅ ВЫПОЛНЕНО
+- ✅ Rust-воркспейс: крейты `crates/{control-plane,engine,runtime-plane,shared-types}`.
+- ✅ Frontend-каркас: React + Vite + Tailwind (токены `ui-concept.md` §3).
+- ✅ Docker: `docker-compose.yml` (dev) + `*.test.yml`/`*.prod.yml`; `Makefile`; CI
+  `.github/workflows/ci.yml` (fmt + clippy `-D warnings` + cargo test; typecheck + build фронта).
+- ✅ `docs/prototype-lessons.md` — конспект подходов; код прототипов не импортирован.
+- **DoD выполнен:** `cargo test --workspace` зелёный, `cargo fmt --check` и `clippy -D warnings`
+  чисто; фронт `npm run build` собирается.
 
-#### Шаг 0а — Закрытый доступ: логин и сессии (§11.3)
-- Single-admin auth: логин/пароль (Argon2), JWT в httpOnly-cookie, TTL, middleware-guard на все роуты,
-  setup-wizard на первый запуск. Минималистичная **login page** (макет в `ui-concept.md`).
-- **DoD:** сервис закрыт — без логина доступны только `/api/health` и страница входа; e2e login/logout зелёный.
+#### Шаг 0а — Закрытый доступ: логин и сессии (§11.3) — ✅ ВЫПОЛНЕНО
+- ✅ Single-admin auth: Argon2 (`auth.rs`), компактный HS256-JWT (HMAC-SHA256, без `ring`),
+  httpOnly-cookie (TTL 7д), setup-wizard (`/api/setup/*`), `Auth`-экстрактор на защищённых роутах,
+  `UserStore` (file + memory) — Postgres в Ш1.
+- ✅ Login/Setup-страница на фронте (`AuthCard`) по `ui-concept.md` §7.9; `AppShell` за логином.
+- **DoD выполнен:** интеграционный e2e `full_auth_lifecycle` зелёный — без cookie `/api/auth/me`
+  даёт 401; публичны только health/setup/login; полный цикл setup→me→login→logout проходит.
 
 #### Шаг 0б — Развёртывание на одной тачке `volter.comalert.pw` (§11)
 - docker compose (postgres/backend/worker/frontend/nginx) по образцу `/opt/volt`; домен
