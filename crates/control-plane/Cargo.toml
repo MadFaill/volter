@@ -24,6 +24,9 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+async-trait = "0.1"
+# sqlx без TLS-фичи: локальный/compose Postgres без TLS — не тянем C-крипто (ring/aws-lc).
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate"] }
 
 [dev-dependencies]
 tower.workspace = true

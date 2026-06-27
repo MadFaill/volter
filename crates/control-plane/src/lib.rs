@@ -121,7 +121,7 @@ struct SetupStatus {
 }
 
 async fn setup_status(State(state): State<AppState>) -> Result<Json<SetupStatus>, ApiError> {
-    let needs_setup = state.store.admin()?.is_none();
+    let needs_setup = state.store.admin().await?.is_none();
     Ok(Json(SetupStatus { needs_setup }))
 }
 
@@ -140,7 +140,7 @@ async fn setup_complete(
     State(state): State<AppState>,
     Json(body): Json<Credentials>,
 ) -> Result<Response, ApiError> {
-    if state.store.admin()?.is_some() {
+    if state.store.admin().await?.is_some() {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "Администратор уже создан",
@@ -157,10 +157,13 @@ async fn setup_complete(
         ));
     }
     let password_hash = auth::hash_password(&body.password)?;
-    state.store.set_admin(AdminRecord {
-        username: username.to_string(),
-        password_hash,
-    })?;
+    state
+        .store
+        .set_admin(AdminRecord {
+            username: username.to_string(),
+            password_hash,
+        })
+        .await?;
     logged_in_response(&state, username)
 }
 
@@ -169,7 +172,7 @@ async fn login(
     Json(body): Json<Credentials>,
 ) -> Result<Response, ApiError> {
     let invalid = || ApiError::new(StatusCode::UNAUTHORIZED, "Неверный логин или пароль");
-    let admin = state.store.admin()?.ok_or_else(invalid)?;
+    let admin = state.store.admin().await?.ok_or_else(invalid)?;
     if admin.username != body.username.trim()
         || !auth::verify_password(&body.password, &admin.password_hash)
     {

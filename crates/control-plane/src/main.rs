@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use argon2::password_hash::rand_core::{OsRng, RngCore};
-use volter_control_plane::store::FileUserStore;
+use volter_control_plane::store::{FileUserStore, PgUserStore, UserStore};
 use volter_control_plane::{build_router, AppState};
 
 #[tokio::main]
@@ -26,7 +26,23 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&data_dir)?;
 
     let jwt_secret = load_or_create_secret(&data_dir)?;
-    let store = Arc::new(FileUserStore::new(data_dir.join("admin.json")));
+
+    // Postgres (Ш1) при наличии DATABASE_URL, иначе файловый стор (dev/фаза 1 без БД).
+    let store: Arc<dyn UserStore> = match std::env::var("DATABASE_URL") {
+        Ok(db) if !db.is_empty() => {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&db)
+                .await?;
+            sqlx::migrate!("./migrations").run(&pool).await?;
+            tracing::info!("store: postgres (миграции применены)");
+            Arc::new(PgUserStore::new(pool))
+        }
+        _ => {
+            tracing::info!("store: file ({}/admin.json)", data_dir.display());
+            Arc::new(FileUserStore::new(data_dir.join("admin.json")))
+        }
+    };
     let state = AppState::new(store, jwt_secret);
 
     let bind = std::env::var("VOLTER_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());

@@ -1,9 +1,13 @@
 //! Хранилище учётной записи администратора.
 //!
-//! Ш0а: single-admin, persistence — файловая (JSON). Трейт `UserStore` позволит в Ш1
-//! заменить реализацию на Postgres без правок хендлеров.
+//! Трейт `UserStore` (async) имеет три реализации:
+//! - [`PgUserStore`] — Postgres (Ш1, основная для деплоя);
+//! - [`FileUserStore`] — файловая (dev/фаза 1 без БД);
+//! - [`MemoryUserStore`] — для тестов.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sqlx::{Pool, Postgres, Row};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -14,10 +18,45 @@ pub struct AdminRecord {
     pub password_hash: String,
 }
 
-/// Абстракция хранилища учётки (в Ш1 — Postgres).
+/// Абстракция хранилища учётки.
+#[async_trait]
 pub trait UserStore: Send + Sync {
-    fn admin(&self) -> anyhow::Result<Option<AdminRecord>>;
-    fn set_admin(&self, record: AdminRecord) -> anyhow::Result<()>;
+    async fn admin(&self) -> anyhow::Result<Option<AdminRecord>>;
+    async fn set_admin(&self, record: AdminRecord) -> anyhow::Result<()>;
+}
+
+/// Postgres-хранилище.
+pub struct PgUserStore {
+    pool: Pool<Postgres>,
+}
+
+impl PgUserStore {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl UserStore for PgUserStore {
+    async fn admin(&self) -> anyhow::Result<Option<AdminRecord>> {
+        let row =
+            sqlx::query("SELECT username, password_hash FROM app_user ORDER BY created_at LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|r| AdminRecord {
+            username: r.get("username"),
+            password_hash: r.get("password_hash"),
+        }))
+    }
+
+    async fn set_admin(&self, record: AdminRecord) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO app_user (username, password_hash) VALUES ($1, $2)")
+            .bind(&record.username)
+            .bind(&record.password_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
 
 /// Файловое хранилище: один JSON-файл с записью администратора.
@@ -35,8 +74,9 @@ impl FileUserStore {
     }
 }
 
+#[async_trait]
 impl UserStore for FileUserStore {
-    fn admin(&self) -> anyhow::Result<Option<AdminRecord>> {
+    async fn admin(&self) -> anyhow::Result<Option<AdminRecord>> {
         let _guard = self.lock.lock().unwrap();
         match std::fs::read(&self.path) {
             Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
@@ -45,7 +85,7 @@ impl UserStore for FileUserStore {
         }
     }
 
-    fn set_admin(&self, record: AdminRecord) -> anyhow::Result<()> {
+    async fn set_admin(&self, record: AdminRecord) -> anyhow::Result<()> {
         let _guard = self.lock.lock().unwrap();
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -63,12 +103,13 @@ pub struct MemoryUserStore {
     inner: Mutex<Option<AdminRecord>>,
 }
 
+#[async_trait]
 impl UserStore for MemoryUserStore {
-    fn admin(&self) -> anyhow::Result<Option<AdminRecord>> {
+    async fn admin(&self) -> anyhow::Result<Option<AdminRecord>> {
         Ok(self.inner.lock().unwrap().clone())
     }
 
-    fn set_admin(&self, record: AdminRecord) -> anyhow::Result<()> {
+    async fn set_admin(&self, record: AdminRecord) -> anyhow::Result<()> {
         *self.inner.lock().unwrap() = Some(record);
         Ok(())
     }
@@ -78,33 +119,32 @@ impl UserStore for MemoryUserStore {
 mod tests {
     use super::*;
 
-    #[test]
-    fn memory_store_roundtrip() {
+    #[tokio::test]
+    async fn memory_store_roundtrip() {
         let store = MemoryUserStore::default();
-        assert!(store.admin().unwrap().is_none());
+        assert!(store.admin().await.unwrap().is_none());
         let rec = AdminRecord {
             username: "admin".into(),
             password_hash: "phc".into(),
         };
-        store.set_admin(rec.clone()).unwrap();
-        assert_eq!(store.admin().unwrap(), Some(rec));
+        store.set_admin(rec.clone()).await.unwrap();
+        assert_eq!(store.admin().await.unwrap(), Some(rec));
     }
 
-    #[test]
-    fn file_store_persists_to_disk() {
+    #[tokio::test]
+    async fn file_store_persists_to_disk() {
         let dir = std::env::temp_dir().join(format!("volter-test-{}", std::process::id()));
         let path = dir.join("admin.json");
         let _ = std::fs::remove_file(&path);
         let store = FileUserStore::new(&path);
-        assert!(store.admin().unwrap().is_none());
+        assert!(store.admin().await.unwrap().is_none());
         let rec = AdminRecord {
             username: "admin".into(),
             password_hash: "phc".into(),
         };
-        store.set_admin(rec.clone()).unwrap();
-        // новый инстанс читает с диска
+        store.set_admin(rec.clone()).await.unwrap();
         let store2 = FileUserStore::new(&path);
-        assert_eq!(store2.admin().unwrap(), Some(rec));
+        assert_eq!(store2.admin().await.unwrap(), Some(rec));
         let _ = std::fs::remove_file(&path);
     }
 }

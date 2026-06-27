@@ -1,6 +1,20 @@
-# Dev / фаза 1 (plan.md §11): control-plane + frontend + nginx на одной машине.
-# Postgres появится в Ш1 (сейчас admin хранится файлом в ./data).
+# Dev / фаза 1 (plan.md §11): postgres + control-plane + frontend + nginx на одной машине.
 services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: volter
+      POSTGRES_USER: volter
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-volter}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U volter -d volter"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   backend:
     build:
       context: .
@@ -9,11 +23,15 @@ services:
     # Под uid/gid пользователя volt (как /opt/volt) — артефакты в ./data не root-owned.
     user: "${VOLTER_UID:-1003}:${VOLTER_GID:-1003}"
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       VOLTER_BIND: 0.0.0.0:8080
       VOLTER_DATA_DIR: /data
+      DATABASE_URL: postgres://volter:${POSTGRES_PASSWORD:-volter}@postgres:5432/volter
     volumes:
       - ./data:/data
       # Фаза 1: уже авторизованные CLI-агенты под volt монтируются для будущих шагов.

@@ -35,9 +35,16 @@ written fresh here. `docs/prototype-lessons.md` is the distilled conspect.
 - `frontend` — React + TS + Vite + Tailwind. Light theme; tokens in `tailwind.config.js` mirror ui-concept §3.
 - `docker-compose.yml` (dev) + `*.test.yml`/`*.prod.yml`; `nginx/`, Dockerfiles per crate/frontend.
 
-Implementation status: **Ш0 (bootstrap), Ш0а (closed access / login), and Ш0б (single-machine deploy)
-are done.** Postgres is deliberately deferred to Ш1 — for now the admin is persisted via the
-`UserStore` trait (file-backed). Deploy/smoke tooling lives in `ops/` (see `ops/README.md`).
+Implementation status: **Ш0, Ш0а, Ш0б, and Ш1 are done.** Deploy/smoke tooling lives in `ops/`
+(see `ops/README.md`).
+
+- `crates/contracts` (`volter-contracts`) — the contract YAML model (§6: manifest/role/plan) and
+  bindings + resolver (§7). Strict validation; 19 tests. This is the architectural core — read
+  `docs/contracts.md` and `docs/bindings.md` before engine/planning work.
+- Postgres schema in `crates/control-plane/migrations/0001_init.sql`, applied via `sqlx::migrate!` on
+  start (`docs/data-model.md`). sqlx is built **without a TLS feature** (local/compose PG, no TLS) to
+  avoid C-crypto deps. `UserStore` is async with `PgUserStore`/`FileUserStore`/`MemoryUserStore`;
+  `main.rs` picks Postgres when `DATABASE_URL` is set, else file-backed.
 
 ## Commands
 

@@ -705,21 +705,20 @@ LLM **не грузит всё**. Цикл:
 - **Отложено до Ш6/Ш7:** «диалог доходит до реального ответа агента» — требует диалога (Ш1) и
   подключённого движка/агентов (Ш6/Ш7); на Ш0б ещё нет диалогового эндпоинта.
 
-#### Шаг 1 — Доменная модель, контрактные YAML-схемы, связки и миграции
-- Спроектировать схему под README + §2 + контрактную модель §6 + связки §7: `projects`, `dialogs`,
-  `messages`, `plans` (stages/steps c `do`/`verify`/`check`/`satisfies`), `runs`, `events`
-  (event-sourcing рана), `jobs`, `nodes`, `deployments`, `task_class`, `cost_entries`.
-- **Связки (§7):** `bindings` (agent+model+tier+mode_params+auth_ref+fallback-цепочка),
-  `binding_profile` (матрица action→binding, `role_pins`, `fallback_policy`) — на проект
-  (`.agent/bindings.yaml`) + override на диалог/сообщение. Резолвер связки по приоритету (§7.3) и
-  fallback (§7.4) — отдельный модуль с тестами.
-- Канон проекта в `.agent/`: схемы и валидаторы YAML для **manifest units** (§6.2), **roles** (§6.2),
-  **plan** (§6.3), **bindings** (§7); строгая (zod-подобная) валидация на Rust.
-- Зафиксировать инварианты: `dialog`→git-ветка, `run`→event-log, `plan`(frozen)→исполняемые шаги,
-  `step.satisfies`→`manifest.unit.id`, `unit.anchorsTo`→`PRODUCT.*`, `action`→`binding` (резолв).
-- **DoD:** миграции применяются; парсер+валидатор контрактных YAML и резолвер связок покрыты тестами
-  (валидный/битый план, трассировка к PRODUCT.*, приоритет override, fallback при недоступности);
-  схемы в `docs/data-model.md`, `docs/contracts.md`, `docs/bindings.md`.
+#### Шаг 1 — Доменная модель, контрактные YAML-схемы, связки и миграции — ✅ ВЫПОЛНЕНО
+- ✅ **Контрактная модель §6** — крейт `volter-contracts`: `manifest` (трассировка `anchors_to→PRODUCT.*`),
+  `role` (guard+gate), `plan` (stages/steps `do`/`verify`/`check`/`satisfies` + детерм. правила нарезки).
+- ✅ **Связки §7** — `bindings` (профиль `action→binding`, `role_pins`, `fallback_policy`) + `resolver`
+  (приоритет message>dialog>pin>default, fallback с сохранением tier, жёсткий `require_kind`).
+- ✅ **Postgres-схема + миграции** — `crates/control-plane/migrations/0001_init.sql`: `app_user`,
+  `projects`, `dialogs`, `messages`, `plans`, `runs`, `events`, `jobs`, `nodes`, `deployments`,
+  `cost_entries`; `sqlx::migrate!` на старте (sqlx без TLS-фичи). `task_class` — CHECK-перечисление.
+- ✅ **`UserStore` → async** с реализациями `PgUserStore`/`FileUserStore`/`MemoryUserStore`; `main.rs`
+  выбирает Postgres при `DATABASE_URL`, иначе файл. Postgres добавлен в dev compose.
+- ✅ Доки: `docs/data-model.md`, `docs/contracts.md`, `docs/bindings.md`.
+- **DoD выполнен (проверено):** `cargo test --workspace` зелёный (контракты 19 тестов + резолвер +
+  async-стор + http-e2e), fmt/clippy чисто; миграции применяются и `PgUserStore` работает против
+  реального Postgres (все 12 таблиц, цикл setup→me→login через БД).
 
 #### Шаг 2 — Абстракция исполнения (runtime-plane) и единый интерфейс агента
 - Спроектировать трейт исполнения: `prepare_workspace` / `run_stage` / `collect_artifacts` /
