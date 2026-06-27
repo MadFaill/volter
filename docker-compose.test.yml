@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: crates/control-plane/Dockerfile
     image: volter-api:test
+    user: "${VOLTER_UID:-1003}:${VOLTER_GID:-1003}"
     restart: unless-stopped
     environment:
       VOLTER_BIND: 0.0.0.0:8080

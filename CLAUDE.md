@@ -35,8 +35,9 @@ written fresh here. `docs/prototype-lessons.md` is the distilled conspect.
 - `frontend` — React + TS + Vite + Tailwind. Light theme; tokens in `tailwind.config.js` mirror ui-concept §3.
 - `docker-compose.yml` (dev) + `*.test.yml`/`*.prod.yml`; `nginx/`, Dockerfiles per crate/frontend.
 
-Implementation status: **Ш0 (bootstrap) and Ш0а (closed access / login) are done.** Postgres is
-deliberately deferred to Ш1 — for now the admin is persisted via the `UserStore` trait (file-backed).
+Implementation status: **Ш0 (bootstrap), Ш0а (closed access / login), and Ш0б (single-machine deploy)
+are done.** Postgres is deliberately deferred to Ш1 — for now the admin is persisted via the
+`UserStore` trait (file-backed). Deploy/smoke tooling lives in `ops/` (see `ops/README.md`).
 
 ## Commands
 
@@ -65,6 +66,15 @@ npm run dev              # vite, proxies /api → VITE_API_TARGET (default http:
 
 `Makefile` wraps these: `make test`, `make lint`, `make fmt-check`, `make fe-build`, `make check`
 (full CI-equivalent), `make up`/`make down` (docker compose). CI is `.github/workflows/ci.yml`.
+
+Deploy / smoke (single machine, plan §11). `deploy.sh` builds images, brings the contour up, and
+healthchecks; `smoke.sh` exercises closed access through nginx. Pick a free port — `80/8080/8088/8099`
+are taken by the running prototypes:
+```bash
+VOLTER_HTTP_PORT=8090 ops/deploy.sh dev    # build+up+healthcheck (also test|prod)
+ops/smoke.sh http://127.0.0.1:8090         # health, /me→401, setup/login, /me→200, frontend
+docker compose -p volter down              # teardown
+```
 
 Run the API directly (file-backed admin):
 ```bash

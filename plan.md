@@ -691,14 +691,19 @@ LLM **не грузит всё**. Цикл:
 - **DoD выполнен:** интеграционный e2e `full_auth_lifecycle` зелёный — без cookie `/api/auth/me`
   даёт 401; публичны только health/setup/login; полный цикл setup→me→login→logout проходит.
 
-#### Шаг 0б — Развёртывание на одной тачке `volter.comalert.pw` (§11)
-- docker compose (postgres/backend/worker/frontend/nginx) по образцу `/opt/volt`; домен
-  `volter.comalert.pw`, TLS на reverse-proxy; раскладка `/opt/volter`, root-owned deploy-врапперы,
-  бэкап перед prod, изоляция dev/prod PGDATA.
-- Монтирование `/home/volt/.codex` и `/home/volt/.claude` в контейнеры (агенты уже авторизованы);
-  runtime-plane в local-режиме; всё co-located на одной ноде (распределённость — позже, Ш3–Ш5).
-- **DoD:** на одной VPS поднимается весь стек; `volter.comalert.pw` отдаёт UI **за логином**; диалог
-  доходит до реального ответа агента (codex/claude) из контейнера; smoke зелёный.
+#### Шаг 0б — Развёртывание на одной тачке `volter.comalert.pw` (§11) — ✅ ВЫПОЛНЕНО
+- ✅ docker compose `backend/frontend/nginx` (Postgres — Ш1) на одной машине, изолированные контуры
+  dev/test/prod (свой проект/порт/data-dir); backend под uid `volt` (артефакты не root-owned).
+- ✅ ops-тулинг по образцу `/opt/volt`: `ops/deploy.sh` (build+up+healthcheck), `ops/smoke.sh`,
+  `ops/backup.sh` (бэкап перед prod), `ops/install.sh` (операторский bootstrap `/opt/volter`,
+  root-owned deploy-врапперы), `ops/Caddyfile.example` (TLS для `volter.comalert.pw`), `ops/README.md`.
+- ✅ Монтирование `/home/volt/.codex`/`.claude` подготовлено в compose (включается на Ш6/Ш7);
+  runtime-plane в local-режиме; всё co-located (распределённость — позже, Ш3–Ш5).
+- **DoD выполнен (проверено):** `ops/deploy.sh dev` поднимает весь стек, healthcheck зелёный;
+  `ops/smoke.sh` зелёный — UI отдаётся **за логином**, `/api/auth/me` без сессии = 401, цикл
+  setup/login/me работает через nginx.
+- **Отложено до Ш6/Ш7:** «диалог доходит до реального ответа агента» — требует диалога (Ш1) и
+  подключённого движка/агентов (Ш6/Ш7); на Ш0б ещё нет диалогового эндпоинта.
 
 #### Шаг 1 — Доменная модель, контрактные YAML-схемы, связки и миграции
 - Спроектировать схему под README + §2 + контрактную модель §6 + связки §7: `projects`, `dialogs`,

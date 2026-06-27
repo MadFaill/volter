@@ -1,0 +1,8 @@
+# Reverse-proxy + автоматический TLS для volter.comalert.pw (plan.md §11.2).
+# Терминирует HTTPS и проксирует на nginx контура (порт публикуется docker compose).
+# Скопируйте в конфиг Caddy оператора. НЕ трогает существующие домены прототипов.
+
+volter.comalert.pw {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8090   # VOLTER_HTTP_PORT контура dev/prod
+}
