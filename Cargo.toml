@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/shared-types",
+    "crates/contracts",
     "crates/runtime-plane",
     "crates/engine",
     "crates/control-plane",
@@ -15,6 +16,7 @@ license = "proprietary"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "fs"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
